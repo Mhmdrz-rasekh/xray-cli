@@ -161,4 +161,3 @@ sudo mv xray-cli /usr/local/bin/
 
 *Developed with ❤️ by MohammadReza Rasekh*
 
-```
