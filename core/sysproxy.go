@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// EnableSystemProxy configures the system to use the local proxy (GNOME/KDE)
+
 func EnableSystemProxy() {
 	de := strings.ToLower(os.Getenv("XDG_CURRENT_DESKTOP"))
 
@@ -24,12 +24,11 @@ func EnableSystemProxy() {
 		_ = exec.Command("kwriteconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "httpsProxy", "http://127.0.0.1:10809").Run()
 		_ = exec.Command("kwriteconfig5", "--file", "kioslaverc", "--group", "Proxy Settings", "--key", "socksProxy", "socks://127.0.0.1:10808").Run()
 		
-		// Reload KIO daemon to apply settings
+		
 		_ = exec.Command("dbus-send", "--type=signal", "/KIO/Scheduler", "org.kde.KIO.Scheduler.reparseSlaveConfiguration", "string:''").Run()
 	}
 }
 
-// DisableSystemProxy removes the system proxy settings
 func DisableSystemProxy() {
 	de := strings.ToLower(os.Getenv("XDG_CURRENT_DESKTOP"))
 
