@@ -8,7 +8,7 @@ import (
 	"github.com/Mhmdrz-rasekh/xray-cli/parser"
 )
 
-// MeasureHttpPing tests the connectivity and latency to the node's address and port
+
 func MeasureHttpPing(node *parser.VlessNode) (time.Duration, error) {
 	port := node.Port
 	if port == "" {
@@ -17,7 +17,7 @@ func MeasureHttpPing(node *parser.VlessNode) (time.Duration, error) {
 
 	target := net.JoinHostPort(node.Address, port)
 
-	// تنظیم تایم‌اوت ۳ ثانیه‌ای برای جلوگیری از گیر کردن برنامه روی سرورهای خاموش
+
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
