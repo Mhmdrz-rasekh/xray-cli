@@ -1,0 +1,12 @@
+# Build outputs
+xray-cli
+xray-cli.exe
+*.exe
+
+# Log files
+*.log
+
+# Temporary & Editor files
+.idea/
+.vscode/
+.DS_Store
