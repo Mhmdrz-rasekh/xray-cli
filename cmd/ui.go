@@ -28,7 +28,7 @@ const (
 	viewAddLocal   = "add_local"
 	viewEditNode   = "edit_node"
 	viewQR         = "view_qr"
-	viewAskPort    = "ask_port" // نمای جدید برای پرسیدن پورت
+	viewAskPort    = "ask_port" 
 )
 
 func killXray(process *os.Process, mode string, cfgPath string) {
@@ -166,7 +166,7 @@ type model struct {
 	terminalHeight int
 	viewportStart  int
 
-	pendingMode      string // ذخیره حالت اتصال درخواستی
+	pendingMode      string 
 	isConnected      bool
 	connectedNode    *storage.Node
 	connectedMode    string
@@ -215,7 +215,6 @@ func (m model) ensureViewport() model {
 	return m
 }
 
-// تابع جدید برای استارت کردن Xray بصورت تمیز
 func (m model) startConnection(mode string, port int) model {
 	if m.isConnected {
 		killXray(m.xrayProcess, m.connectedMode, m.connectedCfgPath)
@@ -529,7 +528,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 
-				// برای سیستم و تونل، مستقیماً استارت بزن (پورت برای سیستم پروکسی لینوکس باید ۱۰۸۰۸ باشه)
 				return m.startConnection(mode, 10808).ensureViewport(), nil
 			}
 
