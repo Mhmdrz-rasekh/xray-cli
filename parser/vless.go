@@ -6,7 +6,6 @@ import (
 	"strings"
 )
 
-// VlessNode ساختار اطلاعات استخراج شده از یک لینک VLESS را نگه می‌دارد
 type VlessNode struct {
 	Name       string
 	Address    string
@@ -26,13 +25,11 @@ type VlessNode struct {
 	Flow       string
 }
 
-// ParseVless یک لینک خام را می‌گیرد و آن را به آبجکت VlessNode تبدیل می‌کند
 func ParseVless(rawLink string) (*VlessNode, error) {
 	if !strings.HasPrefix(rawLink, "vless://") {
 		return nil, fmt.Errorf("unsupported or invalid protocol, only vless:// is supported")
 	}
 
-	// فرمت استاندارد: vless://uuid@address:port?query_params#name
 	parsedUrl, err := url.Parse(rawLink)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse link: %v", err)
@@ -43,7 +40,7 @@ func ParseVless(rawLink string) (*VlessNode, error) {
 	port := parsedUrl.Port()
 	name := parsedUrl.Fragment
 
-	// اگر اسم در فرمت URL انکود شده بود (مثل خط تیره‌ها یا فاصله‌ها)
+	
 	if decodedName, err := url.QueryUnescape(name); err == nil {
 		name = decodedName
 	}
@@ -57,7 +54,7 @@ func ParseVless(rawLink string) (*VlessNode, error) {
 		UUID:       uuid,
 		Encryption: query.Get("encryption"),
 		Security:   query.Get("security"),
-		Network:    query.Get("type"), // نوع شبکه مثل ws, tcp, grpc
+		Network:    query.Get("type"), 
 		SNI:        query.Get("sni"),
 		FP:         query.Get("fp"),
 		PBK:        query.Get("pbk"),
