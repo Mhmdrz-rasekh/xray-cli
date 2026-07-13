@@ -12,11 +12,25 @@ import (
 
 type XrayConfig struct {
 	Log       LogConfig        `json:"log"`
+	API       *ApiConfig       `json:"api,omitempty"`
+	Stats     *StatsConfig     `json:"stats,omitempty"`
+	Policy    *PolicyConfig    `json:"policy,omitempty"`
 	DNS       *DNSConfig       `json:"dns,omitempty"`
 	FakeDNS   []FakeDNSConfig  `json:"fakedns,omitempty"`
 	Inbounds  []InboundConfig  `json:"inbounds"`
 	Outbounds []OutboundConfig `json:"outbounds"`
 	Routing   RoutingConfig    `json:"routing,omitempty"`
+}
+
+type ApiConfig struct {
+	Tag      string   `json:"tag"`
+	Services []string `json:"services"`
+}
+
+type StatsConfig struct{}
+
+type PolicyConfig struct {
+	System map[string]interface{} `json:"system"`
 }
 
 type DNSConfig struct {
@@ -33,6 +47,7 @@ type LogConfig struct {
 }
 
 type InboundConfig struct {
+	Listen   string                 `json:"listen,omitempty"`
 	Tag      string                 `json:"tag,omitempty"`
 	Port     int                    `json:"port,omitempty"`
 	Protocol string                 `json:"protocol"`
@@ -54,8 +69,8 @@ type RoutingConfig struct {
 
 func GenerateConfig(node *parser.VlessNode, mode string, socksPort int) (string, error) {
 	var inbounds []InboundConfig
-	var dnsConfig *DNSConfig
 	var fakeDNS []FakeDNSConfig
+	var dnsConfig *DNSConfig
 	outbounds := []OutboundConfig{}
 	rules := []map[string]interface{}{}
 
@@ -93,7 +108,6 @@ func GenerateConfig(node *parser.VlessNode, mode string, socksPort int) (string,
 
 	enc := node.Encryption
 	if enc == "" { enc = "none" }
-
 	userObj := map[string]interface{}{"id": node.UUID, "encryption": enc, "level": 0}
 	if node.Flow != "" { userObj["flow"] = node.Flow }
 
@@ -101,9 +115,7 @@ func GenerateConfig(node *parser.VlessNode, mode string, socksPort int) (string,
 		Protocol: "vless",
 		Tag:      "proxy",
 		Settings: map[string]interface{}{
-			"vnext": []map[string]interface{}{
-				{"address": node.Address, "port": portNum, "users": []map[string]interface{}{userObj}},
-			},
+			"vnext": []map[string]interface{}{{"address": node.Address, "port": portNum, "users": []map[string]interface{}{userObj}}},
 		},
 		StreamSettings: streamSettings,
 	})
@@ -111,36 +123,15 @@ func GenerateConfig(node *parser.VlessNode, mode string, socksPort int) (string,
 
 	if mode == "tun" {
 		fakeDNS = append(fakeDNS, FakeDNSConfig{IpPool: "198.18.0.0/15", PoolSize: 65535})
-		dnsConfig = &DNSConfig{
-			Servers: []interface{}{"fakedns", "8.8.8.8"},
-		}
-
+		dnsConfig = &DNSConfig{Servers: []interface{}{"fakedns", "8.8.8.8"}}
 		inbounds = append(inbounds, InboundConfig{
-			Protocol: "tun",
-			Tag:      "tun-in",
-			Settings: map[string]interface{}{
-				"network":     "10.0.0.1/30",
-				"system":      true,
-				"autoRoute":   true,
-				"strictRoute": false,
-			},
-			Sniffing: map[string]interface{}{
-				"enabled":      true,
-				"destOverride": []string{"http", "tls", "fakedns"},
-			},
+			Protocol: "tun", Tag: "tun-in",
+			Settings: map[string]interface{}{"network": "10.0.0.1/30", "system": true, "autoRoute": true, "strictRoute": false},
+			Sniffing: map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "fakedns"}},
 		})
-
 		outbounds = append(outbounds, OutboundConfig{Protocol: "dns", Tag: "dns-out", Settings: map[string]interface{}{}})
-
-		rules = append(rules, map[string]interface{}{
-			"type":        "field",
-			"inboundTag":  []string{"tun-in"},
-			"port":        53,
-			"network":     "udp",
-			"outboundTag": "dns-out",
-		})
+		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"tun-in"}, "port": 53, "network": "udp", "outboundTag": "dns-out"})
 	} else {
-        // اختصاص پورت به صورت داینامیک
 		httpPort := socksPort + 1
 		inbounds = append(inbounds,
 			InboundConfig{Port: socksPort, Protocol: "socks", Settings: map[string]interface{}{"auth": "noauth", "udp": true}},
@@ -148,31 +139,32 @@ func GenerateConfig(node *parser.VlessNode, mode string, socksPort int) (string,
 		)
 	}
 
-	rules = append(rules, map[string]interface{}{
-		"type":        "field",
-		"ip":          []string{"geoip:private"},
-		"outboundTag": "direct",
+	inbounds = append(inbounds, InboundConfig{
+		Listen: "127.0.0.1", Port: 10085, Protocol: "dokodemo-door", Tag: "api",
+		Settings: map[string]interface{}{"address": "127.0.0.1"},
 	})
+	rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"api"}, "outboundTag": "api"})
+
+	rules = append(rules, map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"})
 
 	cfg := XrayConfig{
-		Log:       LogConfig{LogLevel: "warning"},
-		DNS:       dnsConfig,
-		FakeDNS:   fakeDNS,
-		Inbounds:  inbounds,
-		Outbounds: outbounds,
-		Routing: RoutingConfig{
-			DomainStrategy: "IPIfNonMatch",
-			Rules:          rules,
+		Log: LogConfig{LogLevel: "warning"},
+		API: &ApiConfig{Tag: "api", Services: []string{"StatsService"}},
+		Stats: &StatsConfig{},
+		Policy: &PolicyConfig{
+			System: map[string]interface{}{
+				"statsOutboundUplink": true, "statsOutboundDownlink": true,
+			},
 		},
+		DNS: dnsConfig, FakeDNS: fakeDNS, Inbounds: inbounds, Outbounds: outbounds,
+		Routing: RoutingConfig{DomainStrategy: "IPIfNonMatch", Rules: rules},
 	}
 
 	configDir, _ := os.UserConfigDir()
 	appDir := filepath.Join(configDir, "xray-cli")
 	outputPath := filepath.Join(appDir, "xray_run_config.json")
-
 	fileData, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil { return "", err }
-
 	os.WriteFile(outputPath, fileData, 0644)
 	return outputPath, nil
 }
