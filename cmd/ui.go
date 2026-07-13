@@ -55,25 +55,29 @@ type pingResultMsg struct {
 }
 
 func startPingCmd(queue []storage.Node) tea.Cmd {
-	if len(queue) == 0 { return nil }
+	if len(queue) == 0 {
+		return nil
+	}
 	return func() tea.Msg {
 		node := queue[0]
-		pingStr := "Error"
-		if strings.HasPrefix(node.RawLink, "vless://") {
+		
+		pingStr := "\033[31m-1\033[0m"
+
+		xrayPath, err := exec.LookPath("xray")
+		if err == nil && strings.HasPrefix(node.RawLink, "vless://") {
 			if parsed, err := parser.ParseVless(node.RawLink); err == nil {
-				if duration, err := core.MeasureHttpPing(parsed); err == nil {
-					pingStr = fmt.Sprintf("%d ms", duration.Milliseconds())
-				} else {
-					if strings.Contains(err.Error(), "Timeout") || strings.Contains(err.Error(), "context") {
-						pingStr = "Timeout"
-					} else { pingStr = "Fail" }
+				if duration, err := core.MeasureRealPing(parsed, xrayPath); err == nil {
+					
+					pingStr = fmt.Sprintf("\033[32m%d ms\033[0m", duration.Milliseconds())
 				}
 			}
-		} else { pingStr = "Skip" }
+		} else if !strings.HasPrefix(node.RawLink, "vless://") {
+			pingStr = "\033[33mSkip\033[0m" 
+		}
+
 		return pingResultMsg{nodeRawLink: node.RawLink, ping: pingStr, remaining: queue[1:]}
 	}
 }
-
 func fetchSubscription(urlStr, groupName string) ([]storage.Node, error) {
 	resp, err := http.Get(urlStr)
 	if err != nil { return nil, err }
