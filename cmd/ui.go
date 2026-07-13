@@ -81,26 +81,30 @@ func startPingCmd(queue []storage.Node) tea.Cmd {
 	}
 }
 
+// تابع آپدیت خودکار برنامه از گیت‌هاب
 func updateAppCmd() tea.Cmd {
 	return func() tea.Msg {
 		execPath, err := os.Executable()
 		if err != nil {
 			return appUpdateMsg{err: err}
 		}
+		
+		// اسکریپت امن با استفاده از rm و mv برای دور زدن خطای Text file busy
 		script := fmt.Sprintf(`
 		export PATH=$PATH:/usr/local/go/bin
 		TMPDIR=$(mktemp -d)
 		cd $TMPDIR
 		git clone https://github.com/Mhmdrz-rasekh/xray-cli.git .
 		go build -ldflags="-s -w" -o new-cli main.go
+		
 		if [ -w "%s" ]; then
-			cp new-cli "%s"
+			rm -f "%s" && mv new-cli "%s"
 		elif command -v pkexec >/dev/null 2>&1; then
-			pkexec cp new-cli "%s"
+			pkexec sh -c 'rm -f "%s" && mv new-cli "%s"'
 		else
-			sudo -S cp new-cli "%s"
+			sudo -S sh -c 'rm -f "%s" && mv new-cli "%s"'
 		fi
-		`, execPath, execPath, execPath, execPath)
+		`, execPath, execPath, execPath, execPath, execPath, execPath, execPath)
 
 		cmd := exec.Command("sh", "-c", script)
 		out, err := cmd.CombinedOutput()
@@ -110,7 +114,6 @@ func updateAppCmd() tea.Cmd {
 		return appUpdateMsg{err: nil}
 	}
 }
-
 func fetchSubscription(urlStr, groupName string) ([]storage.Node, error) {
 	resp, err := http.Get(urlStr)
 	if err != nil { return nil, err }
