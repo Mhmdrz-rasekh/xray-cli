@@ -17,6 +17,7 @@ import (
 	"github.com/Mhmdrz-rasekh/xray-cli/storage"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mdp/qrterminal/v3"
 	"github.com/spf13/cobra"
 )
@@ -28,7 +29,7 @@ const (
 	viewAddLocal   = "add_local"
 	viewEditNode   = "edit_node"
 	viewQR         = "view_qr"
-	viewAskPort    = "ask_port" 
+	viewAskPort    = "ask_port"
 )
 
 func killXray(process *os.Process, mode string, cfgPath string) {
@@ -48,36 +49,68 @@ func killXray(process *os.Process, mode string, cfgPath string) {
 	}
 }
 
+
 type pingResultMsg struct {
 	nodeRawLink string
 	ping        string
 	remaining   []storage.Node
 }
 
+type appUpdateMsg struct {
+	err error
+}
+
 func startPingCmd(queue []storage.Node) tea.Cmd {
-	if len(queue) == 0 {
-		return nil
-	}
+	if len(queue) == 0 { return nil }
 	return func() tea.Msg {
 		node := queue[0]
-		
 		pingStr := "\033[31m-1\033[0m"
 
 		xrayPath, err := exec.LookPath("xray")
 		if err == nil && strings.HasPrefix(node.RawLink, "vless://") {
 			if parsed, err := parser.ParseVless(node.RawLink); err == nil {
 				if duration, err := core.MeasureRealPing(parsed, xrayPath); err == nil {
-					
 					pingStr = fmt.Sprintf("\033[32m%d ms\033[0m", duration.Milliseconds())
 				}
 			}
 		} else if !strings.HasPrefix(node.RawLink, "vless://") {
-			pingStr = "\033[33mSkip\033[0m" 
+			pingStr = "\033[33mSkip\033[0m"
 		}
 
 		return pingResultMsg{nodeRawLink: node.RawLink, ping: pingStr, remaining: queue[1:]}
 	}
 }
+
+func updateAppCmd() tea.Cmd {
+	return func() tea.Msg {
+		execPath, err := os.Executable()
+		if err != nil {
+			return appUpdateMsg{err: err}
+		}
+		script := fmt.Sprintf(`
+		export PATH=$PATH:/usr/local/go/bin
+		TMPDIR=$(mktemp -d)
+		cd $TMPDIR
+		git clone https://github.com/Mhmdrz-rasekh/xray-cli.git .
+		go build -ldflags="-s -w" -o new-cli main.go
+		if [ -w "%s" ]; then
+			cp new-cli "%s"
+		elif command -v pkexec >/dev/null 2>&1; then
+			pkexec cp new-cli "%s"
+		else
+			sudo -S cp new-cli "%s"
+		fi
+		`, execPath, execPath, execPath, execPath)
+
+		cmd := exec.Command("sh", "-c", script)
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			return appUpdateMsg{err: fmt.Errorf("%v: %s", err, string(out))}
+		}
+		return appUpdateMsg{err: nil}
+	}
+}
+
 func fetchSubscription(urlStr, groupName string) ([]storage.Node, error) {
 	resp, err := http.Get(urlStr)
 	if err != nil { return nil, err }
@@ -168,9 +201,10 @@ type model struct {
 	qrString   string
 
 	terminalHeight int
+	terminalWidth  int
 	viewportStart  int
 
-	pendingMode      string 
+	pendingMode      string
 	isConnected      bool
 	connectedNode    *storage.Node
 	connectedMode    string
@@ -182,14 +216,14 @@ func (m model) Init() tea.Cmd { return textinput.Blink }
 
 func (m model) getVisibleLimit() int {
 	maxVis := 10
-	if m.terminalHeight > 20 { maxVis = m.terminalHeight - 18 }
+	if m.terminalHeight > 22 { maxVis = m.terminalHeight - 20 }
 	if maxVis < 4 { maxVis = 4 }
 	return maxVis
 }
 
 func (m model) ensureViewport() model {
 	if m.terminalHeight == 0 || len(m.nodes) == 0 { return m }
-	availableLines := m.terminalHeight - 18
+	availableLines := m.terminalHeight - 20
 	if availableLines < 5 { availableLines = 5 }
 
 	for {
@@ -277,7 +311,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		m.terminalWidth = msg.Width
 		m.terminalHeight = msg.Height
+		return m.ensureViewport(), nil
+
+	case appUpdateMsg:
+		if msg.err != nil {
+			m.statusMsg = "Update failed: " + msg.err.Error()
+		} else {
+			m.statusMsg = "Update installed successfully! Restart the app to apply changes."
+		}
 		return m.ensureViewport(), nil
 
 	case pingResultMsg:
@@ -302,6 +345,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.ensureViewport(), nil
 			}
 			return m, tea.Quit
+		
+		case "ctrl+u":
+			if m.currentView == viewMain {
+				m.statusMsg = "Downloading & installing update from GitHub... Please wait."
+				return m, updateAppCmd()
+			}
 
 		case "tab", "shift+tab":
 			if m.currentView == viewEditNode {
@@ -504,7 +553,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			case viewAskPort:
 				portStr := strings.TrimSpace(m.textInput.Value())
-				port := 10808 // پورت پیش‌فرض
+				port := 10808
 				if portStr != "" {
 					if p, err := strconv.Atoi(portStr); err == nil && p > 0 && p < 65536 {
 						port = p
@@ -531,7 +580,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textInput.Focus()
 					return m, nil
 				}
-
 				return m.startConnection(mode, 10808).ensureViewport(), nil
 			}
 
@@ -550,31 +598,32 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	var s strings.Builder
-	s.WriteString("\n  === Xray CLI Interactive Dashboard ===\n\n")
+	s.WriteString("=== Xray CLI Interactive Dashboard ===\n\n")
 
 	if m.currentView == viewMain || m.currentView == viewEditNode {
 		if m.isConnected && m.connectedNode != nil {
 			name := m.connectedNode.Name
 			if parsed, err := parser.ParseVless(m.connectedNode.RawLink); err == nil { name = parsed.Name }
-			s.WriteString(fmt.Sprintf("  🟢 STATUS: CONNECTED  |  Mode: %s  |  Server: %s\n", strings.ToUpper(m.connectedMode), name))
+			s.WriteString(fmt.Sprintf("🟢 STATUS: CONNECTED  |  Mode: %s  |  Server: %s\n", strings.ToUpper(m.connectedMode), name))
 		} else {
-			s.WriteString("  🔴 STATUS: DISCONNECTED\n")
+			s.WriteString("🔴 STATUS: DISCONNECTED\n")
 		}
-		s.WriteString(strings.Repeat("━", 80) + "\n")
+		s.WriteString(strings.Repeat("━", 78) + "\n")
 	}
 
 	switch m.currentView {
 	case viewMain:
-		s.WriteString("  [↑/↓] Navigate | [x] Del Node | [Shift+X] Del Sub | [Q] Quit\n")
-		s.WriteString("  [A] Add Sub    | [L] Add Local| [E] Edit Node     | [U] Update Subs\n")
-		s.WriteString("  [P] Ping Node  | [G] Ping Grp | [C] Ping All      | [V] View QR Code\n")
-		s.WriteString("  [M] Manual     | [S] SysProxy | [T] TUN Mode      | [D] Disconnect \n")
-		s.WriteString(strings.Repeat("━", 80) + "\n")
+		s.WriteString("[↑/↓] Navigate | [x] Del Node | [Shift+X] Del Sub | [Q] Quit\n")
+		s.WriteString("[A] Add Sub    | [L] Add Local| [E] Edit Node     | [U] Update Subs\n")
+		s.WriteString("[P] Ping Node  | [G] Ping Grp | [C] Ping All      | [V] View QR Code\n")
+		s.WriteString("[M] Manual     | [S] SysProxy | [T] TUN Mode      | [D] Disconnect \n")
+		s.WriteString("[Ctrl+U] Update App\n")
+		s.WriteString(strings.Repeat("━", 78) + "\n")
 
 		if len(m.nodes) == 0 {
-			s.WriteString("\n  [ ▼ LOCAL ]\n  ( No configs. Press 'A' or 'L' to add one. )\n\n")
+			s.WriteString("\n[ ▼ LOCAL ]\n( No configs. Press 'A' or 'L' to add one. )\n\n")
 		} else {
-			availableLines := m.terminalHeight - 18
+			availableLines := m.terminalHeight - 20
 			if availableLines < 5 { availableLines = 5 }
 
 			linesUsed := 0
@@ -593,7 +642,7 @@ func (m model) View() string {
 				end = i + 1
 			}
 
-			if m.viewportStart > 0 { s.WriteString("  ... ⇡ (Scroll Up) ⇡ ...\n") } else { s.WriteString("\n") }
+			if m.viewportStart > 0 { s.WriteString("... ⇡ (Scroll Up) ⇡ ...\n") } else { s.WriteString("\n") }
 
 			var renderLastGrp string
 			if m.viewportStart > 0 { renderLastGrp = m.nodes[m.viewportStart-1].Group }
@@ -601,7 +650,7 @@ func (m model) View() string {
 			for i := m.viewportStart; i < end; i++ {
 				node := m.nodes[i]
 				if node.Group != renderLastGrp {
-					s.WriteString(fmt.Sprintf("\n  [ ▼ %s ]\n", strings.ToUpper(node.Group)))
+					s.WriteString(fmt.Sprintf("\n[ ▼ %s ]\n", strings.ToUpper(node.Group)))
 					renderLastGrp = node.Group
 				}
 				
@@ -620,41 +669,41 @@ func (m model) View() string {
 
 				s.WriteString(fmt.Sprintf("%s%s [%d] %s (%s)%s\n", cursorStr, activeMark, i+1, displayName, node.Protocol, pingStr))
 			}
-			if end < len(m.nodes) { s.WriteString("\n  ... ⇣ (Scroll Down) ⇣ ...\n") } else { s.WriteString("\n\n") }
+			if end < len(m.nodes) { s.WriteString("\n... ⇣ (Scroll Down) ⇣ ...\n") } else { s.WriteString("\n\n") }
 		}
 
 	case viewQR:
-		s.WriteString("  === QR Code ===\n")
-		s.WriteString("  Press [ESC] or [Q] to return\n")
-		s.WriteString(strings.Repeat("━", 80) + "\n\n")
+		s.WriteString("=== QR Code ===\n")
+		s.WriteString("Press [ESC] or [Q] to return\n")
+		s.WriteString(strings.Repeat("━", 78) + "\n\n")
 		s.WriteString(m.qrString)
 		s.WriteString("\n")
 
 	case viewEditNode:
-		s.WriteString("  === Edit Configuration ===\n")
-		s.WriteString("  [Tab] Switch Fields | [Enter] Save | [ESC] Cancel\n")
-		s.WriteString(strings.Repeat("━", 80) + "\n\n")
-		s.WriteString("  Alias / Name:\n  " + m.editInputs[0].View() + "\n\n")
-		s.WriteString("  Raw Link (vless://...):\n  " + m.editInputs[1].View() + "\n")
+		s.WriteString("=== Edit Configuration ===\n")
+		s.WriteString("[Tab] Switch Fields | [Enter] Save | [ESC] Cancel\n")
+		s.WriteString(strings.Repeat("━", 78) + "\n\n")
+		s.WriteString("Alias / Name:\n" + m.editInputs[0].View() + "\n\n")
+		s.WriteString("Raw Link (vless://...):\n" + m.editInputs[1].View() + "\n")
 
 	case viewAskPort:
-		s.WriteString("  === Start Manual Connection ===\n")
-		s.WriteString("  Leave empty to use default SOCKS port (10808).\n")
-		s.WriteString(strings.Repeat("━", 80) + "\n\n")
-		s.WriteString("  " + m.textInput.View() + "\n")
+		s.WriteString("=== Start Manual Connection ===\n")
+		s.WriteString("Leave empty to use default SOCKS port (10808).\n")
+		s.WriteString(strings.Repeat("━", 78) + "\n\n")
+		s.WriteString(m.textInput.View() + "\n")
 
 	case viewAddSubName:
-		s.WriteString("  Step 1/2: Sub Name\n\n  " + m.textInput.View() + "\n")
+		s.WriteString("Step 1/2: Sub Name\n\n" + m.textInput.View() + "\n")
 	case viewAddSubUrl:
-		s.WriteString(fmt.Sprintf("  Step 2/2: URL for [%s]\n\n  ", m.tempSubName) + m.textInput.View() + "\n")
+		s.WriteString(fmt.Sprintf("Step 2/2: URL for [%s]\n\n", m.tempSubName) + m.textInput.View() + "\n")
 	case viewAddLocal:
-		s.WriteString("  Add Raw Config (Local)\n\n  " + m.textInput.View() + "\n")
+		s.WriteString("Add Raw Config (Local)\n\n" + m.textInput.View() + "\n")
 	}
 
-	s.WriteString("\n" + strings.Repeat("━", 80) + "\n")
-	if m.statusMsg != "" { s.WriteString("  📢 Status: " + m.statusMsg + "\n") } else { s.WriteString("  \n") }
+	s.WriteString("\n" + strings.Repeat("━", 78) + "\n")
+	if m.statusMsg != "" { s.WriteString("📢 Status: " + m.statusMsg + "\n") } else { s.WriteString("\n") }
 
-	return s.String()
+	return lipgloss.Place(m.terminalWidth, m.terminalHeight, lipgloss.Center, lipgloss.Center, s.String())
 }
 
 func init() { rootCmd.AddCommand(uiCmd) }
