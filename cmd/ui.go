@@ -364,18 +364,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				for i := range m.editInputs { if i == m.editFocus { m.editInputs[i].Focus() } else { m.editInputs[i].Blur() } }
 				return m, nil
 			}
-		case "up", "down":
-			if m.currentView == viewEditNode {
-				if msg.String() == "up" { m.editFocus-- } else { m.editFocus++ }
-				if m.editFocus > 1 { m.editFocus = 0 }; if m.editFocus < 0 { m.editFocus = 1 }
-				for i := range m.editInputs { if i == m.editFocus { m.editInputs[i].Focus() } else { m.editInputs[i].Blur() } }
-				return m, nil
-			}
-			if m.currentView == viewMain {
-				if msg.String() == "up" && m.cursor > 0 { m.cursor-- }
-				if msg.String() == "down" && m.cursor < len(m.nodes)-1 { m.cursor++ }
-				return m.ensureViewport(), nil
-			}
+		case "up", "down", "k", "j":
+            if m.currentView == viewEditNode {
+                if msg.String() == "up" || msg.String() == "k" { m.editFocus-- } else { m.editFocus++ }
+                if m.editFocus > 1 { m.editFocus = 0 }
+                if m.editFocus < 0 { m.editFocus = 1 }
+                for i := range m.editInputs {
+                    if i == m.editFocus { m.editInputs[i].Focus() } else { m.editInputs[i].Blur() }
+                }
+                return m, nil
+            }
+
+            if m.currentView == viewMain {
+                if (msg.String() == "up" || msg.String() == "k") && m.cursor > 0 { m.cursor-- }
+                if (msg.String() == "down" || msg.String() == "j") && m.cursor < len(m.nodes)-1 { m.cursor++ }
+                return m.ensureViewport(), nil
+            }
 		case "x":
 			if m.currentView == viewMain && len(m.nodes) > 0 {
 				m.nodes = append(m.nodes[:m.cursor], m.nodes[m.cursor+1:]...); m.dbRef.Nodes = m.nodes; _ = storage.SaveDB(m.dbRef); m.statusMsg = "Config deleted."
@@ -506,7 +510,7 @@ func (m model) View() string {
 
 	switch m.currentView {
 	case viewMain:
-		s.WriteString("[↑/↓] Navigate | [x] Del Node | [Shift+X] Del Sub | [Q] Quit\n")
+		s.WriteString("[↑/↓ | j/k] Navigate | [x] Del Node | [Shift+X] Del Sub | [Q] Quit\n")
 		s.WriteString("[A] Add Sub    | [L] Add Local| [E] Edit Node     | [U] Update Subs\n")
 		s.WriteString("[P] Ping Node  | [G] Ping Grp | [C] Ping All      | [V] View QR Code\n")
 		s.WriteString("[M] Manual     | [S] SysProxy | [T] TUN Mode      | [D] Disconnect \n")
