@@ -24,6 +24,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+    titleStyle     = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#00ADD8")).MarginBottom(1).MarginTop(1)
+    badgeStyle     = lipgloss.NewStyle().Bold(true).Padding(0, 1).Foreground(lipgloss.Color("#000000"))
+    connectedBadge = badgeStyle.Copy().Background(lipgloss.Color("#00FF00"))
+    offlineBadge   = badgeStyle.Copy().Background(lipgloss.Color("#FF4444"))
+    dimStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("#777777"))
+    highlightStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#00ADD8")).Bold(true)
+    cursorCol   = lipgloss.NewStyle().Width(4)
+    indexCol    = lipgloss.NewStyle().Width(6).Align(lipgloss.Right).PaddingRight(1)
+    nameCol     = lipgloss.NewStyle().Width(36)
+    protoCol    = lipgloss.NewStyle().Width(10)
+    pingCol     = lipgloss.NewStyle().Width(18)
+)
+
 const (
 	viewMain       = "main"
 	viewAddSubName = "add_sub_name"
@@ -237,6 +251,8 @@ type model struct {
 	ulTotal int64
 	dlSpeed int64
 	ulSpeed int64
+
+	showHelp         bool
 }
 
 // در لحظه استارت شدن برنامه، تایمر هم فعال می‌شود
@@ -470,6 +486,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if mode == "manual" { m.pendingMode = "manual"; m.currentView = viewAskPort; m.textInput.Placeholder = "Enter SOCKS port (Press Enter for 10808)"; m.textInput.Focus(); return m, nil }
 				return m.startConnection(mode, 10808).ensureViewport(), nil
 			}
+		case "?":
+            if m.currentView == viewMain {
+                m.showHelp = !m.showHelp
+                return m.ensureViewport(), nil
+            }
 		case "d", "D":
 			if m.currentView == viewMain && m.isConnected {
 				killXray(m.xrayProcess, m.connectedMode, m.connectedCfgPath)
@@ -486,37 +507,85 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m model) View() string {
 	var s strings.Builder
-	s.WriteString("=== Xray CLI Interactive Dashboard ===\n\n")
+	// 1. Render the Main Title
+    s.WriteString(titleStyle.Render("XRAY-CLI DASHBOARD") + "\n")
 
-	if m.currentView == viewMain || m.currentView == viewEditNode {
-		if m.isConnected && m.connectedNode != nil {
-			name := m.connectedNode.Name
-			if parsed, err := parser.ParseVless(m.connectedNode.RawLink); err == nil { name = parsed.Name }
-			
-			// چاپ وضعیت کانکشن در خط اول
-			s.WriteString(fmt.Sprintf("🟢 CONNECTED  |  Mode: %s  |  Server: %s\n", strings.ToUpper(m.connectedMode), name))
-			
-			// چاپ سرعت و مصرف ترافیک در خط دوم به صورت زنده
-			statsLine := fmt.Sprintf("   \033[36m▼ %s/s\033[0m (%s)   \033[35m▲ %s/s\033[0m (%s)", 
-				formatBytes(m.dlSpeed), formatBytes(m.dlTotal),
-				formatBytes(m.ulSpeed), formatBytes(m.ulTotal))
-			s.WriteString(statsLine + "\n")
+    // 2. Render the Status Line
+    if m.currentView == viewMain || m.currentView == viewEditNode {
+        if m.isConnected && m.connectedNode != nil {
+            name := m.connectedNode.Name
+            if parsed, err := parser.ParseVless(m.connectedNode.RawLink); err == nil { name = parsed.Name }
+            
+            status := connectedBadge.Render("CONNECTED")
+            mode := highlightStyle.Render(strings.ToUpper(m.connectedMode))
+            server := highlightStyle.Render(name)
+            
+            s.WriteString(fmt.Sprintf("%s  Mode: %s  |  Server: %s\n", status, mode, server))
+		    // چاپ سرعت و مصرف ترافیک در خط دوم به صورت زنده
+		    statsLine := fmt.Sprintf("   \033[36m▼ %s/s\033[0m (%s)   \033[35m▲ %s/s\033[0m (%s)", 
+				    formatBytes(m.dlSpeed), formatBytes(m.dlTotal),
+				    formatBytes(m.ulSpeed), formatBytes(m.ulTotal))
+		    s.WriteString(statsLine + "\n")
+        } else {
+            s.WriteString(fmt.Sprintf("%s\n", offlineBadge.Render("DISCONNECTED")))
+        }
+        s.WriteString(dimStyle.Render(strings.Repeat("━", 86)) + "\n")
+    }
 
-		} else {
-			s.WriteString("🔴 STATUS: DISCONNECTED\n\n")
-		}
-		s.WriteString(strings.Repeat("━", 78) + "\n")
-	}
+ // 3. Render the Conditional Help Menu
+    if m.currentView == viewMain {
+        if m.showHelp {
+            // Column 1: Navigation & System
+            c1 := lipgloss.JoinVertical(lipgloss.Left,
+                "[↑/↓ | j/k] Navigate",
+                "[?] Hide Help",
+                "[Q] Quit",
+                "[Ctrl+U] Update App",
+                "",
+            )
+            // Column 2: Connection Modes
+            c2 := lipgloss.JoinVertical(lipgloss.Left,
+                "[M] Manual",
+                "[S] SysProxy",
+                "[T] TUN Mode",
+                "[D] Disconnect",
+                "",
+            )
+            // Column 3: Node Management
+            c3 := lipgloss.JoinVertical(lipgloss.Left,
+                "[L] Add Local",
+                "[A] Add Sub",
+                "[E] Edit Node",
+                "[x] Del Node",
+                "[Shift+X] Del Sub",
+            )
+            // Column 4: Actions & Utilities
+            c4 := lipgloss.JoinVertical(lipgloss.Left,
+                "[P] Ping Node",
+                "[G] Ping Grp",
+                "[C] Ping All",
+                "[U] Update Subs",
+                "[V] View QR Code",
+            )
+
+            // Stitch columns together with rigid widths
+            helpGrid := lipgloss.JoinHorizontal(lipgloss.Top,
+                lipgloss.NewStyle().Width(24).Render(c1),
+                lipgloss.NewStyle().Width(18).Render(c2),
+                lipgloss.NewStyle().Width(22).Render(c3),
+                lipgloss.NewStyle().Width(20).Render(c4),
+            )
+            
+            s.WriteString(dimStyle.Render(helpGrid) + "\n")
+        } else {
+            s.WriteString(dimStyle.Render("Press [?] for help • [Q] Quit") + "\n")
+        }
+        s.WriteString(dimStyle.Render(strings.Repeat("━", 86)) + "\n\n")
+    }
+
 
 	switch m.currentView {
-	case viewMain:
-		s.WriteString("[↑/↓ | j/k] Navigate | [x] Del Node | [Shift+X] Del Sub | [Q] Quit\n")
-		s.WriteString("[A] Add Sub    | [L] Add Local| [E] Edit Node     | [U] Update Subs\n")
-		s.WriteString("[P] Ping Node  | [G] Ping Grp | [C] Ping All      | [V] View QR Code\n")
-		s.WriteString("[M] Manual     | [S] SysProxy | [T] TUN Mode      | [D] Disconnect \n")
-		s.WriteString("[Ctrl+U] Update App\n")
-		s.WriteString(strings.Repeat("━", 78) + "\n")
-
+    case viewMain:
 		if len(m.nodes) == 0 {
 			s.WriteString("\n[ ▼ LOCAL ]\n( No configs. Press 'A' or 'L' to add one. )\n\n")
 		} else {
@@ -537,37 +606,67 @@ func (m model) View() string {
 
 			for i := m.viewportStart; i < end; i++ {
 				node := m.nodes[i]
-				if node.Group != renderLastGrp { s.WriteString(fmt.Sprintf("\n[ ▼ %s ]\n", strings.ToUpper(node.Group))); renderLastGrp = node.Group }
 				
-				cursorStr, activeMark := "  ", " "
-				if m.cursor == i { cursorStr = "▶ " }
-				if m.isConnected && m.connectedNode != nil && m.connectedNode.RawLink == node.RawLink { activeMark = "★" }
+				// 1. Group Header
+				if node.Group != renderLastGrp {
+					s.WriteString(fmt.Sprintf("\n[ ▼ %s ]\n", strings.ToUpper(node.Group)))
+					renderLastGrp = node.Group
+				}
+				
+				// 2. Cursor and State Markers
+				marker := "   "
+				if m.cursor == i { marker = "▶  " }
+				if m.isConnected && m.connectedNode != nil && m.connectedNode.RawLink == node.RawLink {
+					if m.cursor == i {
+						marker = "▶★ "
+					} else {
+						marker = " ★ "
+					}
+				}
 
+				// 3. Name Sanitization (No manual space padding needed)
 				displayName := node.Name
 				if parsed, err := parser.ParseVless(node.RawLink); err == nil { displayName = parsed.Name }
-
+				
 				runes := []rune(displayName)
-				if len(runes) > 32 { displayName = string(runes[:29]) + "..." } else { displayName = displayName + strings.Repeat(" ", 32-len(runes)) }
+				if len(runes) > 34 { 
+					displayName = string(runes[:33]) + "…" 
+            }
 
+				// 4. Ping Formatting
 				pingStr := ""
-				if node.Ping == "..." { pingStr = " ⏳" } else if node.Ping != "" { pingStr = fmt.Sprintf(" ⟪ %s ⟫", node.Ping) }
-				s.WriteString(fmt.Sprintf("%s%s [%d] %s (%s)%s\n", cursorStr, activeMark, i+1, displayName, node.Protocol, pingStr))
-			}
+				if node.Ping == "..." { 
+					pingStr = "⏳" 
+				} else if node.Ping != "" { 
+					pingStr = fmt.Sprintf("⟪ %s ⟫", node.Ping) 
+				}
+
+				// 5. Construct the Row using Lipgloss Columns
+				row := lipgloss.JoinHorizontal(lipgloss.Left,
+					cursorCol.Render(marker),
+					indexCol.Render(fmt.Sprintf("[%d]", i+1)),
+					nameCol.Render(displayName),
+					protoCol.Render(fmt.Sprintf("(%s)", node.Protocol)),
+					pingCol.Render(pingStr),
+				)
+				
+				s.WriteString(row + "\n")
+        }
 			if end < len(m.nodes) { s.WriteString("\n... ⇣ (Scroll Down) ⇣ ...\n") } else { s.WriteString("\n\n") }
 		}
 
 	case viewQR:
-		s.WriteString("=== QR Code ===\nPress [ESC] or [Q] to return\n" + strings.Repeat("━", 78) + "\n\n" + m.qrString + "\n")
+		s.WriteString("=== QR Code ===\nPress [ESC] or [Q] to return\n" + strings.Repeat("━", 86) + "\n\n" + m.qrString + "\n")
 	case viewEditNode:
-		s.WriteString("=== Edit Configuration ===\n[Tab] Switch Fields | [Enter] Save | [ESC] Cancel\n" + strings.Repeat("━", 78) + "\n\nAlias / Name:\n" + m.editInputs[0].View() + "\n\nRaw Link (vless://...):\n" + m.editInputs[1].View() + "\n")
+		s.WriteString("=== Edit Configuration ===\n[Tab] Switch Fields | [Enter] Save | [ESC] Cancel\n" + strings.Repeat("━", 86) + "\n\nAlias / Name:\n" + m.editInputs[0].View() + "\n\nRaw Link (vless://...):\n" + m.editInputs[1].View() + "\n")
 	case viewAskPort:
-		s.WriteString("=== Start Manual Connection ===\nLeave empty to use default SOCKS port (10808).\n" + strings.Repeat("━", 78) + "\n\n" + m.textInput.View() + "\n")
+		s.WriteString("=== Start Manual Connection ===\nLeave empty to use default SOCKS port (10808).\n" + strings.Repeat("━", 86) + "\n\n" + m.textInput.View() + "\n")
 	case viewAddSubName: s.WriteString("Step 1/2: Sub Name\n\n" + m.textInput.View() + "\n")
 	case viewAddSubUrl: s.WriteString(fmt.Sprintf("Step 2/2: URL for [%s]\n\n", m.tempSubName) + m.textInput.View() + "\n")
 	case viewAddLocal: s.WriteString("Add Raw Config (Local)\n\n" + m.textInput.View() + "\n")
 	}
 
-	s.WriteString("\n" + strings.Repeat("━", 78) + "\n")
+	s.WriteString("\n" + strings.Repeat("━", 86) + "\n")
 	if m.statusMsg != "" { s.WriteString("📢 Status: " + m.statusMsg + "\n") } else { s.WriteString("\n") }
 	return lipgloss.Place(m.terminalWidth, m.terminalHeight, lipgloss.Center, lipgloss.Center, s.String())
 }
