@@ -35,6 +35,7 @@ type PolicyConfig struct {
 
 type DNSConfig struct {
 	Servers []interface{} `json:"servers"`
+	QueryStrategy string        `json:"queryStrategy,omitempty"`
 }
 
 type FakeDNSConfig struct {
@@ -69,10 +70,15 @@ type RoutingConfig struct {
 
 func GenerateConfig(node *parser.VlessNode, mode string, socksPort int) (string, error) {
 	var inbounds []InboundConfig
-	var fakeDNS []FakeDNSConfig
-	var dnsConfig *DNSConfig
-	outbounds := []OutboundConfig{}
-	rules := []map[string]interface{}{}
+    var fakeDNS []FakeDNSConfig
+    outbounds := []OutboundConfig{}
+    rules := []map[string]interface{}{}
+
+    // Global Safe DNS - Forces IPv4 to prevent remote IPv6 sinkholes
+    dnsConfig := &DNSConfig{
+        Servers:       []interface{}{"8.8.8.8", "1.1.1.1", "localhost"},
+        QueryStrategy: "UseIPv4",
+    }
 
 	portNum, err := strconv.Atoi(node.Port)
 	if err != nil || portNum == 0 { portNum = 443 }
@@ -120,24 +126,27 @@ func GenerateConfig(node *parser.VlessNode, mode string, socksPort int) (string,
 		StreamSettings: streamSettings,
 	})
 	outbounds = append(outbounds, OutboundConfig{Protocol: "freedom", Tag: "direct", Settings: map[string]interface{}{}})
+	outbounds = append(outbounds, OutboundConfig{Protocol: "blackhole", Tag: "block", Settings: map[string]interface{}{}})
 
 	if mode == "tun" {
-		fakeDNS = append(fakeDNS, FakeDNSConfig{IpPool: "198.18.0.0/15", PoolSize: 65535})
-		dnsConfig = &DNSConfig{Servers: []interface{}{"fakedns", "8.8.8.8"}}
-		inbounds = append(inbounds, InboundConfig{
-			Protocol: "tun", Tag: "tun-in",
-			Settings: map[string]interface{}{"network": "10.0.0.1/30", "system": true, "autoRoute": true, "strictRoute": false},
-			Sniffing: map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "fakedns"}},
-		})
-		outbounds = append(outbounds, OutboundConfig{Protocol: "dns", Tag: "dns-out", Settings: map[string]interface{}{}})
-		rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"tun-in"}, "port": 53, "network": "udp", "outboundTag": "dns-out"})
-	} else {
-		httpPort := socksPort + 1
-		inbounds = append(inbounds,
-			InboundConfig{Port: socksPort, Protocol: "socks", Settings: map[string]interface{}{"auth": "noauth", "udp": true}},
-			InboundConfig{Port: httpPort, Protocol: "http", Settings: map[string]interface{}{}},
-		)
-	}
+			fakeDNS = append(fakeDNS, FakeDNSConfig{IpPool: "198.18.0.0/15", PoolSize: 65535})
+			dnsConfig.Servers = []interface{}{"fakedns", "8.8.8.8"} // Override for TUN
+			inbounds = append(inbounds, InboundConfig{
+				Protocol: "tun", Tag: "tun-in",
+				// INJECTED fd00::/126 to capture and proxy IPv6 traffic
+				Settings: map[string]interface{}{"network": "10.0.0.1/30,fd00::/126", "system": true, "autoRoute": true, "strictRoute": false},
+				Sniffing: map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic", "fakedns"}},
+			})
+			outbounds = append(outbounds, OutboundConfig{Protocol: "dns", Tag: "dns-out", Settings: map[string]interface{}{}})
+			rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"tun-in"}, "port": 53, "network": "udp", "outboundTag": "dns-out"})
+		} else {
+			httpPort := socksPort + 1
+			sniff := map[string]interface{}{"enabled": true, "destOverride": []string{"http", "tls", "quic"}}
+			inbounds = append(inbounds,
+				InboundConfig{Port: socksPort, Protocol: "socks", Settings: map[string]interface{}{"auth": "noauth", "udp": true}, Sniffing: sniff},
+				InboundConfig{Port: httpPort, Protocol: "http", Settings: map[string]interface{}{}, Sniffing: sniff},
+			)
+		}
 
 	inbounds = append(inbounds, InboundConfig{
 		Listen: "127.0.0.1", Port: 10085, Protocol: "dokodemo-door", Tag: "api",
@@ -146,6 +155,14 @@ func GenerateConfig(node *parser.VlessNode, mode string, socksPort int) (string,
 	rules = append(rules, map[string]interface{}{"type": "field", "inboundTag": []string{"api"}, "outboundTag": "api"})
 
 	rules = append(rules, map[string]interface{}{"type": "field", "ip": []string{"geoip:private"}, "outboundTag": "direct"})
+
+    // Force browser to abandon QUIC and fallback to standard TCP
+    rules = append(rules, map[string]interface{}{
+        "type": "field",
+        "port": 443,
+        "network": "udp",
+        "outboundTag": "block",
+    })
 
 	cfg := XrayConfig{
 		Log: LogConfig{LogLevel: "warning"},
