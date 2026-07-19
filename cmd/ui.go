@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -153,35 +154,80 @@ func updateAppCmd() tea.Cmd {
 	}
 }
 
-func fetchSubscription(urlStr, groupName string) ([]storage.Node, error) {
-	resp, err := http.Get(urlStr)
-	if err != nil { return nil, err }
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
-	if err != nil { return nil, err }
+var (
+    reData = regexp.MustCompile(`(\d+)\s*گیگابایت`)
+    reDays = regexp.MustCompile(`(\d+)\s*روز`)
+	rePing = regexp.MustCompile(`(\d+)\s*ms`)
+)
 
-	content := strings.TrimSpace(string(body))
-	if pad := len(content) % 4; pad != 0 { content += strings.Repeat("=", 4-pad) }
-	decoded, err := base64.StdEncoding.DecodeString(content)
-	if err != nil { decoded, err = base64.URLEncoding.DecodeString(content) }
-	if err == nil { content = string(decoded) }
+func fetchSubscription(urlStr, groupName string) ([]storage.Node, map[string]string, error) {
+    resp, err := http.Get(urlStr)
+    if err != nil { return nil, nil, err }
+    defer resp.Body.Close()
+    body, err := io.ReadAll(resp.Body)
+    if err != nil { return nil, nil, err }
 
-	var newNodes []storage.Node
-	lines := strings.Split(content, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "vless://") { newNodes = append(newNodes, storage.Node{Name: "Sub Node", Protocol: "VLESS", RawLink: line, Group: groupName}) }
-	}
-	return newNodes, nil
+    content := strings.TrimSpace(string(body))
+    if pad := len(content) % 4; pad != 0 { content += strings.Repeat("=", 4-pad) }
+    decoded, err := base64.StdEncoding.DecodeString(content)
+    if err != nil { decoded, err = base64.URLEncoding.DecodeString(content) }
+    if err == nil { content = string(decoded) }
+
+    var newNodes []storage.Node
+    metadata := make(map[string]string)
+
+    lines := strings.Split(content, "\n")
+    for _, line := range lines {
+        line = strings.TrimSpace(line)
+        if !strings.HasPrefix(line, "vless://") { continue }
+
+        parsed, err := parser.ParseVless(line)
+        name := ""
+        if err == nil { name = parsed.Name }
+
+		if reData.MatchString(name) || reDays.MatchString(name) || strings.Contains(name, "اسم") {
+            if m := reData.FindStringSubmatch(name); m != nil { metadata["usage"] = m[1] + " GB" }
+            if m := reDays.FindStringSubmatch(name); m != nil { metadata["days"] = m[1] + " Days" }
+            continue // Drop dummy node
+        }
+        
+        if parsed != nil { name = parsed.Name } else { name = "Sub Node" }
+        newNodes = append(newNodes, storage.Node{Name: name, Protocol: "VLESS", RawLink: line, Group: groupName})
+    }
+    return newNodes, metadata, nil
 }
 
-func sortNodesByGroup(nodes []storage.Node) []storage.Node {
-	sort.SliceStable(nodes, func(i, j int) bool {
-		if nodes[i].Group == "Local" && nodes[j].Group != "Local" { return true }
-		if nodes[i].Group != "Local" && nodes[j].Group == "Local" { return false }
-		return nodes[i].Group < nodes[j].Group
-	})
-	return nodes
+func getPingValue(pingStr string) int {
+    if match := rePing.FindStringSubmatch(pingStr); match != nil {
+        if val, err := strconv.Atoi(match[1]); err == nil { return val }
+    }
+    return -1
+}
+
+func sortNodes(nodes []storage.Node, mode string) []storage.Node {
+    sort.SliceStable(nodes, func(i, j int) bool {
+        // 1. Preserve Group Headers
+        if nodes[i].Group == "Local" && nodes[j].Group != "Local" { return true }
+        if nodes[i].Group != "Local" && nodes[j].Group == "Local" { return false }
+        if nodes[i].Group != nodes[j].Group { return nodes[i].Group < nodes[j].Group }
+
+        // 2. Sort within the group
+        if mode == "ping" {
+            p1, p2 := getPingValue(nodes[i].Ping), getPingValue(nodes[j].Ping)
+            if p1 != p2 {
+                if p1 == -1 { return false } // Dead node sinks
+                if p2 == -1 { return true }  // Dead node sinks
+                return p1 < p2
+            }
+        }
+
+        // 3. Fallback: Sort by Name Alphabetically
+        name1, name2 := nodes[i].Name, nodes[j].Name
+        if p1, err := parser.ParseVless(nodes[i].RawLink); err == nil { name1 = p1.Name }
+        if p2, err := parser.ParseVless(nodes[j].RawLink); err == nil { name2 = p2.Name }
+        return strings.ToLower(name1) < strings.ToLower(name2)
+    })
+    return nodes
 }
 
 var uiCmd = &cobra.Command{
@@ -193,7 +239,7 @@ var uiCmd = &cobra.Command{
 			fmt.Printf("Error loading database: %v\n", err)
 			return
 		}
-		db.Nodes = sortNodesByGroup(db.Nodes)
+		db.Nodes = sortNodes(db.Nodes, "name")
 
 		ti := textinput.New()
 		ti.Focus()
@@ -206,9 +252,11 @@ var uiCmd = &cobra.Command{
 		}
 
 		m := model{
-			nodes: db.Nodes, currentView: viewMain, textInput: ti, dbRef: db,
-			editInputs: editInputs, editFocus: 0,
-		}
+            nodes: db.Nodes, currentView: viewMain, textInput: ti, dbRef: db,
+            editInputs: editInputs, editFocus: 0,
+            subMetadata: make(map[string]string),
+			sortMode: "name",
+        }
 
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		runModel, _ := p.Run()
@@ -235,6 +283,9 @@ type model struct {
 	editFocus   int
 	qrString    string
 
+	subMetadata map[string]string
+	sortMode    string
+	
 	terminalHeight int
 	terminalWidth  int
 	viewportStart  int
@@ -291,7 +342,7 @@ func (m model) startConnection(mode string, port int) model {
 	if m.isConnected {
 		killXray(m.xrayProcess, m.connectedMode, m.connectedCfgPath)
 		if m.connectedMode == "system" { core.DisableSystemProxy() }
-		m.dlTotal, m.ulTotal, m.dlSpeed, m.ulSpeed = 0, 0, 0, 0 // ریست کردن حجم در اتصال جدید
+		m.dlTotal, m.ulTotal, m.dlSpeed, m.ulSpeed = 0, 0, 0, 0           // reset traffic on new connection
 	}
 
 	xrayPath, err := exec.LookPath("xray")
@@ -414,12 +465,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.dbRef.Subscriptions = filteredSubs; m.dbRef.Nodes = m.nodes; _ = storage.SaveDB(m.dbRef); m.statusMsg = fmt.Sprintf("Subscription [%s] completely deleted!", groupToDelete); m.cursor = 0; m.viewportStart = 0; return m.ensureViewport(), nil
 			}
 		case "u", "U":
-			if m.currentView == viewMain {
-				m.statusMsg = "Updating subscriptions..."; var newNodes []storage.Node
-				for _, n := range m.nodes { if n.Group == "Local" { newNodes = append(newNodes, n) } }
-				for _, sub := range m.dbRef.Subscriptions { fetched, _ := fetchSubscription(sub.URL, sub.Name); newNodes = append(newNodes, fetched...) }
-				m.nodes = sortNodesByGroup(newNodes); m.dbRef.Nodes = m.nodes; _ = storage.SaveDB(m.dbRef); m.statusMsg = "All subscriptions updated!"; if m.cursor >= len(m.nodes) { m.cursor = 0; m.viewportStart = 0 }; return m.ensureViewport(), nil
-			}
+            if m.currentView == viewMain {
+                m.statusMsg = "Updating subscriptions..."; var newNodes []storage.Node
+                
+                // LEAVE THIS LOOP ALONE (Preserves Local configs)
+                for _, n := range m.nodes { if n.Group == "Local" { newNodes = append(newNodes, n) } }
+                
+                // REPLACE YOUR SECOND LOOP WITH THIS MULTI-LINE BLOCK
+                for _, sub := range m.dbRef.Subscriptions { 
+                    fetched, meta, _ := fetchSubscription(sub.URL, sub.Name)
+                    if len(meta) > 0 { 
+                        m.subMetadata[sub.Name] = fmt.Sprintf("%s | %s", meta["usage"], meta["days"]) 
+                    }
+                    newNodes = append(newNodes, fetched...) 
+                }
+                
+                m.nodes = sortNodes(newNodes, m.sortMode); m.dbRef.Nodes = m.nodes; _ = storage.SaveDB(m.dbRef); m.statusMsg = "All subscriptions updated!"; if m.cursor >= len(m.nodes) { m.cursor = 0; m.viewportStart = 0 }; return m.ensureViewport(), nil
+            }
+		case "o", "O":
+            if m.currentView == viewMain && len(m.nodes) > 0 {
+                if m.sortMode == "ping" { 
+                    m.sortMode = "name" 
+                } else { 
+                    m.sortMode = "ping" 
+                }
+                m.nodes = sortNodes(m.nodes, m.sortMode)
+                m.dbRef.Nodes = m.nodes
+                _ = storage.SaveDB(m.dbRef)
+                m.statusMsg = "Order: Sorted by " + strings.ToUpper(m.sortMode)
+                return m.ensureViewport(), nil
+            }
 		case "v", "V":
 			if m.currentView == viewMain && len(m.nodes) > 0 { m.currentView = viewQR; var buf strings.Builder; qrterminal.GenerateHalfBlock(m.nodes[m.cursor].RawLink, qrterminal.L, &buf); m.qrString = buf.String(); return m, nil }
 		case "e", "E":
@@ -450,22 +525,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch m.currentView {
 			case viewAddSubName:
 				name := strings.TrimSpace(m.textInput.Value()); if name != "" { m.tempSubName = name; m.currentView = viewAddSubUrl; m.textInput.Reset(); m.textInput.Placeholder = "Paste URL" }
-			case viewAddSubUrl:
-				urlStr := strings.TrimSpace(m.textInput.Value())
-				if urlStr != "" {
-					m.dbRef.Subscriptions = append(m.dbRef.Subscriptions, storage.Subscription{Name: m.tempSubName, URL: urlStr})
-					fetched, err := fetchSubscription(urlStr, m.tempSubName)
-					if err == nil { m.nodes = append(m.nodes, fetched...); m.statusMsg = fmt.Sprintf("Added %s!", m.tempSubName) }
-					m.nodes = sortNodesByGroup(m.nodes); m.dbRef.Nodes = m.nodes; _ = storage.SaveDB(m.dbRef); m.currentView = viewMain; m.textInput.Reset()
-				}
-			case viewAddLocal:
-				linkStr := strings.TrimSpace(m.textInput.Value())
-				if strings.HasPrefix(linkStr, "vless://") {
-					if parsed, err := parser.ParseVless(linkStr); err == nil {
-						m.nodes = append(m.nodes, storage.Node{Name: parsed.Name, Protocol: "VLESS", RawLink: linkStr, Group: "Local"})
-						m.nodes = sortNodesByGroup(m.nodes); m.dbRef.Nodes = m.nodes; _ = storage.SaveDB(m.dbRef); m.currentView = viewMain; m.textInput.Reset(); m.statusMsg = "Local config added!"
-					}
-				}
+		case viewAddSubUrl:
+                urlStr := strings.TrimSpace(m.textInput.Value())
+                if urlStr != "" {
+                    m.dbRef.Subscriptions = append(m.dbRef.Subscriptions, storage.Subscription{Name: m.tempSubName, URL: urlStr})
+                    
+                    // --- REPLACE THESE SPECIFIC LINES ---
+                    fetched, meta, err := fetchSubscription(urlStr, m.tempSubName)
+                    if err == nil { 
+                        if len(meta) > 0 { 
+                            m.subMetadata[m.tempSubName] = fmt.Sprintf("%s | %s", meta["usage"], meta["days"]) 
+                        }
+                        m.nodes = append(m.nodes, fetched...)
+                        m.statusMsg = fmt.Sprintf("Added %s!", m.tempSubName) 
+                    }
+                    // ------------------------------------
+                    
+                    m.nodes = sortNodes(m.nodes, m.sortMode); m.dbRef.Nodes = m.nodes; _ = storage.SaveDB(m.dbRef); m.currentView = viewMain; m.textInput.Reset()
+                }
 			case viewEditNode:
 				newName := strings.TrimSpace(m.editInputs[0].Value()); newLink := strings.TrimSpace(m.editInputs[1].Value())
 				if newName != "" && strings.HasPrefix(newLink, "vless://") {
@@ -538,6 +615,7 @@ func (m model) View() string {
             // Column 1: Navigation & System
             c1 := lipgloss.JoinVertical(lipgloss.Left,
                 "[↑/↓ | j/k] Navigate",
+				"[O] Order: Name/Ping",
                 "[?] Hide Help",
                 "[Q] Quit",
                 "[Ctrl+U] Update App",
@@ -608,6 +686,15 @@ func (m model) View() string {
 				node := m.nodes[i]
 				
 				// 1. Group Header
+				if node.Group != renderLastGrp {
+					metaStr := ""
+					if meta, exists := m.subMetadata[node.Group]; exists && meta != " | " && meta != "" {
+						metaStr = fmt.Sprintf(" ( %s )", meta)
+					}
+					s.WriteString(fmt.Sprintf("\n[ ▼ %s%s ]\n", strings.ToUpper(node.Group), metaStr))
+					renderLastGrp = node.Group
+				}
+
 				if node.Group != renderLastGrp {
 					s.WriteString(fmt.Sprintf("\n[ ▼ %s ]\n", strings.ToUpper(node.Group)))
 					renderLastGrp = node.Group
