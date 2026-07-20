@@ -155,9 +155,9 @@ func updateAppCmd() tea.Cmd {
 }
 
 var (
-    reData = regexp.MustCompile(`(\d+)\s*گیگابایت`)
-    reDays = regexp.MustCompile(`(\d+)\s*روز`)
-	rePing = regexp.MustCompile(`(\d+)\s*ms`)
+    reData = regexp.MustCompile(`(\d+|نامحدود)\s*گیگابایت`)
+    reDays = regexp.MustCompile(`(\d+|نامحدود)\s*روز`)
+    rePing = regexp.MustCompile(`(\d+)\s*ms`)
 )
 
 func fetchSubscription(urlStr, groupName string) ([]storage.Node, map[string]string, error) {
@@ -177,7 +177,7 @@ func fetchSubscription(urlStr, groupName string) ([]storage.Node, map[string]str
     metadata := make(map[string]string)
 
     lines := strings.Split(content, "\n")
-    for _, line := range lines {
+	for _, line := range lines {
         line = strings.TrimSpace(line)
         if !strings.HasPrefix(line, "vless://") { continue }
 
@@ -185,16 +185,31 @@ func fetchSubscription(urlStr, groupName string) ([]storage.Node, map[string]str
         name := ""
         if err == nil { name = parsed.Name }
 
-		if reData.MatchString(name) || reDays.MatchString(name) || strings.Contains(name, "اسم") {
-            if m := reData.FindStringSubmatch(name); m != nil { metadata["usage"] = m[1] + " GB" }
-            if m := reDays.FindStringSubmatch(name); m != nil { metadata["days"] = m[1] + " Days" }
+        isDummy := reData.MatchString(name) || reDays.MatchString(name) || 
+                   strings.Contains(name, "اسم") || strings.Contains(name, "ترافیک") || 
+                   strings.Contains(name, "زمان") || strings.Contains(name, "انقضا")
+
+        if isDummy {
+            // Data Metadata Extraction
+            if m := reData.FindStringSubmatch(name); m != nil {
+                if m[1] == "نامحدود" { metadata["usage"] = "∞" } else { metadata["usage"] = m[1] + " GB" }
+            } else if strings.Contains(name, "ترافیک") && strings.Contains(name, "نامحدود") {
+                metadata["usage"] = "∞"
+            }
+
+            // Days Metadata Extraction
+            if m := reDays.FindStringSubmatch(name); m != nil {
+                if m[1] == "نامحدود" { metadata["days"] = "∞" } else { metadata["days"] = m[1] + " Days" }
+            } else if (strings.Contains(name, "زمان") || strings.Contains(name, "انقضا")) && strings.Contains(name, "نامحدود") {
+                metadata["days"] = "∞"
+            }
             continue // Drop dummy node
         }
         
         if parsed != nil { name = parsed.Name } else { name = "Sub Node" }
         newNodes = append(newNodes, storage.Node{Name: name, Protocol: "VLESS", RawLink: line, Group: groupName})
     }
-    return newNodes, metadata, nil
+	return newNodes, metadata, nil
 }
 
 func getPingValue(pingStr string) int {
