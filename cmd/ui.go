@@ -187,13 +187,14 @@ func fetchSubscription(urlStr, groupName string) ([]storage.Node, map[string]str
 
         isDummy := reData.MatchString(name) || reDays.MatchString(name) || 
                    strings.Contains(name, "اسم") || strings.Contains(name, "ترافیک") || 
-                   strings.Contains(name, "زمان") || strings.Contains(name, "انقضا")
+                   strings.Contains(name, "زمان") || strings.Contains(name, "انقضا") ||
+                   strings.Contains(name, "حجم")
 
         if isDummy {
             // Data Metadata Extraction
             if m := reData.FindStringSubmatch(name); m != nil {
                 if m[1] == "نامحدود" { metadata["usage"] = "∞" } else { metadata["usage"] = m[1] + " GB" }
-            } else if strings.Contains(name, "ترافیک") && strings.Contains(name, "نامحدود") {
+            } else if (strings.Contains(name, "ترافیک") || strings.Contains(name, "حجم")) && strings.Contains(name, "نامحدود") {
                 metadata["usage"] = "∞"
             }
 
