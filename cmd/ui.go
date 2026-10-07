@@ -246,6 +246,8 @@ func sortNodes(nodes []storage.Node, mode string) []storage.Node {
     return nodes
 }
 
+var autoUpdateFlag bool
+
 var uiCmd = &cobra.Command{
 	Use:   "ui",
 	Short: "Open the interactive terminal dashboard",
@@ -272,7 +274,9 @@ var uiCmd = &cobra.Command{
             editInputs: editInputs, editFocus: 0,
             subMetadata: make(map[string]string),
 			sortMode: "name",
+			autoUpdate: autoUpdateFlag,
         }
+		if autoUpdateFlag { m.statusMsg = "Updating subscriptions..." }
 
 		p := tea.NewProgram(m, tea.WithAltScreen())
 		runModel, _ := p.Run()
@@ -320,10 +324,60 @@ type model struct {
 	ulSpeed int64
 
 	showHelp         bool
+	autoUpdate       bool // run subscription update right after launch (--update)
+}
+
+// startupUpdateMsg triggers the subscription update once at launch (--update flag).
+type startupUpdateMsg struct{}
+
+func startupUpdateCmd() tea.Cmd {
+	return func() tea.Msg { return startupUpdateMsg{} }
+}
+
+// updateSubscriptions re-fetches every subscription and refreshes the node list.
+// It is shared by the manual [U] key and the --update startup flag.
+// Local nodes are always preserved. If a subscription cannot be fetched
+// (e.g. offline), its previously saved nodes are kept instead of being wiped.
+func (m model) updateSubscriptions() model {
+	var newNodes []storage.Node
+	for _, n := range m.nodes {
+		if n.Group == "Local" { newNodes = append(newNodes, n) }
+	}
+
+	failed := 0
+	for _, sub := range m.dbRef.Subscriptions {
+		fetched, meta, err := fetchSubscription(sub.URL, sub.Name)
+		if err != nil {
+			failed++
+			for _, n := range m.nodes {
+				if n.Group == sub.Name { newNodes = append(newNodes, n) }
+			}
+			continue
+		}
+		if len(meta) > 0 {
+			m.subMetadata[sub.Name] = fmt.Sprintf("%s | %s", meta["usage"], meta["days"])
+		}
+		newNodes = append(newNodes, fetched...)
+	}
+
+	m.nodes = sortNodes(newNodes, m.sortMode)
+	m.dbRef.Nodes = m.nodes
+	_ = storage.SaveDB(m.dbRef)
+	if failed > 0 {
+		m.statusMsg = fmt.Sprintf("Updated with errors: %d of %d subscriptions failed (kept old nodes).", failed, len(m.dbRef.Subscriptions))
+	} else {
+		m.statusMsg = "All subscriptions updated!"
+	}
+	if m.cursor >= len(m.nodes) { m.cursor = 0; m.viewportStart = 0 }
+	return m
 }
 
 // در لحظه استارت شدن برنامه، تایمر هم فعال می‌شود
-func (m model) Init() tea.Cmd { return tea.Batch(textinput.Blink, doTick()) }
+func (m model) Init() tea.Cmd {
+	cmds := []tea.Cmd{textinput.Blink, doTick()}
+	if m.autoUpdate { cmds = append(cmds, startupUpdateCmd()) }
+	return tea.Batch(cmds...)
+}
 
 func (m model) getVisibleLimit() int {
 	maxVis := 10
@@ -421,6 +475,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, doTick()
 
+	case startupUpdateMsg:
+		if m.currentView == viewMain { return m.updateSubscriptions().ensureViewport(), nil }
+		return m, nil
+
 	case appUpdateMsg:
 		if msg.err != nil { m.statusMsg = "Update failed: " + msg.err.Error() } else { m.statusMsg = "Update installed! Restart the app to apply changes." }
 		return m.ensureViewport(), nil
@@ -481,23 +539,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.dbRef.Subscriptions = filteredSubs; m.dbRef.Nodes = m.nodes; _ = storage.SaveDB(m.dbRef); m.statusMsg = fmt.Sprintf("Subscription [%s] completely deleted!", groupToDelete); m.cursor = 0; m.viewportStart = 0; return m.ensureViewport(), nil
 			}
 		case "u", "U":
-            if m.currentView == viewMain {
-                m.statusMsg = "Updating subscriptions..."; var newNodes []storage.Node
-                
-                // LEAVE THIS LOOP ALONE (Preserves Local configs)
-                for _, n := range m.nodes { if n.Group == "Local" { newNodes = append(newNodes, n) } }
-                
-                // REPLACE YOUR SECOND LOOP WITH THIS MULTI-LINE BLOCK
-                for _, sub := range m.dbRef.Subscriptions { 
-                    fetched, meta, _ := fetchSubscription(sub.URL, sub.Name)
-                    if len(meta) > 0 { 
-                        m.subMetadata[sub.Name] = fmt.Sprintf("%s | %s", meta["usage"], meta["days"]) 
-                    }
-                    newNodes = append(newNodes, fetched...) 
-                }
-                
-                m.nodes = sortNodes(newNodes, m.sortMode); m.dbRef.Nodes = m.nodes; _ = storage.SaveDB(m.dbRef); m.statusMsg = "All subscriptions updated!"; if m.cursor >= len(m.nodes) { m.cursor = 0; m.viewportStart = 0 }; return m.ensureViewport(), nil
-            }
+			if m.currentView == viewMain {
+				return m.updateSubscriptions().ensureViewport(), nil
+			}
 		case "o", "O":
             if m.currentView == viewMain && len(m.nodes) > 0 {
                 if m.sortMode == "ping" { 
@@ -774,4 +818,7 @@ func (m model) View() string {
 	return lipgloss.Place(m.terminalWidth, m.terminalHeight, lipgloss.Center, lipgloss.Center, s.String())
 }
 
-func init() { rootCmd.AddCommand(uiCmd) }
+func init() {
+	uiCmd.Flags().BoolVarP(&autoUpdateFlag, "update", "u", false, "Update all subscriptions automatically at startup")
+	rootCmd.AddCommand(uiCmd)
+}

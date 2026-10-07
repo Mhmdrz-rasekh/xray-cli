@@ -78,6 +78,16 @@ Run the dashboard by typing `xray-cli` in your terminal.
 | `G` | Ping Entire Group | `Shift+X` | Delete Entire Sub/Group |
 | `C` | Ping All Nodes | `Q` / `ESC` | Quit / Go Back |
 
+### Auto-update on startup
+
+To refresh all subscriptions as soon as the dashboard opens (the same as pressing `U`), launch with the `-u` / `--update` flag:
+
+```bash
+xray-cli ui --update   # or: xray-cli ui -u
+```
+
+Without the flag, the dashboard starts immediately without touching the network. If a subscription can't be reached (e.g. you're offline), its previously saved nodes are kept.
+
 ---
 
 ---
